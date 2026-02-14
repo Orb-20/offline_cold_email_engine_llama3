@@ -24,8 +24,7 @@ with st.container(border=True):
                 "Getting Recruiters (Headhunters)",
                 "Getting Partnerships (B2B)"
             ],
-            index=0,
-            help="This changes how the AI analyzes the prospect and writes the email."
+            index=0
         )
 
 st.markdown("---")
@@ -40,7 +39,6 @@ with tab_auto:
         st.subheader("Target Parameters")
         linkedin_url = st.text_input("Enter LinkedIn URL", placeholder="https://www.linkedin.com/in/satya-nadella")
         
-        # Dynamic placeholder based on goal
         note_placeholder = "e.g., I'm a React Dev looking for a senior role..."
         if "Clients" in campaign_goal: note_placeholder = "e.g., We help SaaS companies scale SEO..."
         if "Investors" in campaign_goal: note_placeholder = "e.g., Pre-seed AI startup raising $500k..."
@@ -66,7 +64,6 @@ with tab_auto:
                         st.write("✅ Web Snippets Collected")
                         st.write(f"🧠 Profiling Target for: {campaign_goal}...")
                         
-                        # PASS THE GOAL TO THE ANALYZER
                         analysis_result = analyze_web_data(research_data, campaign_goal)
                         
                         if "error" in analysis_result:
@@ -82,38 +79,72 @@ with tab_auto:
         if "auto_analysis" in st.session_state:
             data = st.session_state["auto_analysis"]
             
-            # Identity Section
+            # --- 1. TARGET IDENTITY (FIXED) ---
             identity = data.get("identity", {})
-            st.info(f"**Target:** {identity.get('full_name')} | {identity.get('likely_current_role')} @ {identity.get('company')}")
             
-            # Tabs for details
-            t1, t2, t3 = st.tabs(["📊 Fit Score", "🧠 Psyche", "🚀 Strategy"])
+            # Safe Fallbacks to prevent "****"
+            full_name = identity.get('full_name') or "Unknown Target"
+            role = identity.get('likely_current_role') or "Unknown Role"
+            company = identity.get('company') or "Unknown Company"
+            location = identity.get('location_if_known') or "Location Unknown"
+
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.markdown(f"### 🎯 {full_name}")
+                    st.markdown(f"**{role}** @ **{company}**")
+                    st.caption(f"📍 {location}")
+                with c2:
+                    score = data.get("professional_profile", {}).get("decision_maker_score_0_to_100", 0)
+                    st.metric("Fit Score", f"{score}/100")
+
+            # --- 2. PROFESSIONAL PROFILE & INTERESTS ---
+            t1, t2, t3 = st.tabs(["💼 Professional Profile", "🗣️ Interests & Activity", "🚀 Strategy"])
             
             with t1:
                 prof = data.get("professional_profile", {})
-                st.metric("Relevance Score", f"{prof.get('decision_maker_score_0_to_100')}/100", help="How relevant they are to YOUR goal")
-                st.write(f"**Authority:** {prof.get('seniority_level')}")
-                st.write(f"**Why them:** {prof.get('relevance_reasoning', 'No specific reason detected.')}")
+                st.markdown("#### Expertise & Focus")
+                # Safely handle list or missing data
+                skills = prof.get("key_skills_and_expertise", [])
+                if isinstance(skills, list) and skills:
+                    st.info(f"**Core Skills:** {', '.join(skills)}")
+                
+                st.write(f"**Company Stage:** {prof.get('estimated_company_stage', 'Unknown')}")
+                st.success(f"**Why them:** {prof.get('relevance_reasoning', 'Analysis incomplete.')}")
 
             with t2:
-                behav = data.get("behavioral_intelligence", {})
+                interests = data.get("personal_interests", {})
+                st.markdown("#### What they are talking about")
+                
+                if interests.get("recent_activity_summary"):
+                    st.markdown(f"Found on Web: *\"{interests.get('recent_activity_summary')}\"*")
+                
+                topics = interests.get("topics_discussed_recently", [])
+                if isinstance(topics, list) and topics:
+                    st.write(f"**Topics:** {', '.join(topics)}")
+                else:
+                    st.caption("No specific recent topics found in snippets.")
+                    
                 comm = data.get("communication_analysis", {})
-                st.write(f"**Archetype:** `{behav.get('archetype')}`")
-                st.write(f"**Tone:** `{comm.get('tone_style')}`")
-                st.progress(comm.get("formality_score_0_to_100", 50)/100, text="Formality")
+                st.markdown("---")
+                st.caption(f"**Comm Style:** {comm.get('tone_style', 'Neutral')} | **Formality:** {comm.get('formality_score_0_to_100', 50)}%")
 
             with t3:
                 strat = data.get("outreach_strategy", {})
                 buying = data.get("buying_intent_signals", {})
-                st.success(f"**Hook:** {strat.get('opening_hook_type')}")
-                st.write(f"**CTA:** {strat.get('cta_style')}")
-                if buying.get('intent_level') == 'High':
-                    st.warning("🔥 HIGH OPPORTUNITY SIGNAL")
+                
+                st.markdown(f"**Hook:** `{strat.get('opening_hook_type', 'Direct Value')}`")
+                st.markdown(f"**CTA:** `{strat.get('cta_style', 'Direct Ask')}`")
+                
+                signals = buying.get('signals_detected', [])
+                if signals:
+                    st.warning(f"🔥 **Signals:** {', '.join(signals)}")
+                else:
+                    st.info("No strong buying signals detected yet.")
 
-            # Generation Button
-            if st.button(f"📧 Generate '{st.session_state['current_goal']}' Email", type="primary"):
+            # --- 3. GENERATION ---
+            if st.button(f"📧 Generate '{st.session_state['current_goal']}' Email", type="primary", use_container_width=True):
                 with st.spinner("Drafting..."):
-                    
                     # Adapt data for generator
                     adapted_data = {
                         "basic_info": identity,
@@ -124,22 +155,20 @@ with tab_auto:
                         "company_insights": {"likely_tech_stack": []}
                     }
                     
-                    # PASS THE GOAL TO THE GENERATOR
                     email = generate_email(adapted_data, st.session_state["auto_notes"], st.session_state["current_goal"])
                     
-                    # Save logic
                     save_email(
-                        identity.get('full_name', 'Unknown'),
-                        identity.get('likely_current_role', 'Unknown'),
-                        identity.get('company', 'Unknown'),
+                        full_name,
+                        role,
+                        company,
                         identity.get('industry', 'Unknown'),
                         data['outreach_strategy']['recommended_tone'],
                         email,
                         f"{st.session_state['current_goal']} | {data['behavioral_intelligence']['archetype']}"
                     )
-                    st.text_area("Draft", email, height=400)
+                    st.text_area("Final Draft", email, height=400)
 
 # ================= MANUAL TAB =================
 with tab_manual:
     st.caption("Paste raw text here if web search fails.")
-    # (Kept simple for brevity, logic mimics above)
+    # (Kept simple for brevity)

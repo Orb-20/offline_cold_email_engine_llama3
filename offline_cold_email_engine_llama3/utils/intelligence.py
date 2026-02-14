@@ -20,7 +20,7 @@ def clean_json_response(response_text):
 def analyze_web_data(research_data, objective):
     """
     Analyzes web data with a specific User Objective.
-    CRITICAL: Accepts both 'research_data' AND 'objective'.
+    Accepts: research_data (dict) AND objective (str).
     """
     
     snippets = "\n".join(research_data.get("google_snippets", []))
@@ -71,9 +71,15 @@ Return ONLY valid JSON with this exact structure:
   "professional_profile": {{
     "seniority_level": "Junior | Mid | Senior | Director | VP | Founder | Executive",
     "decision_maker_score_0_to_100": 0,
-    "relevance_reasoning": "Why are they good for the specific USER GOAL?",
+    "key_skills_and_expertise": [],
     "estimated_company_stage": "Early | Growth | Scale | Enterprise",
-    "confidence": "Low | Medium | High"
+    "relevance_reasoning": "Why are they good for the specific USER GOAL?"
+  }},
+
+  "personal_interests": {{
+    "topics_discussed_recently": [],
+    "hobbies_or_passions": [],
+    "recent_activity_summary": "One sentence on what they are posting about or doing recently (e.g. 'Speaking at AI conferences' or 'Hiring React devs')."
   }},
 
   "communication_analysis": {{
