@@ -1,247 +1,192 @@
 import streamlit as st
-from utils.intelligence import analyze_prospect, analyze_web_data
-from utils.generator import generate_email
-from utils.web_research import perform_web_research
-from database.database import init_db, save_email, get_all_records
+import json
+import time
 
-# 1. Page Config (Must be first)
-st.set_page_config(page_title="Offline LLaMA3 Outreach Engine", layout="wide")
+# Robust Imports
+try:
+    from utils.intelligence import analyze_web_data, analyze_prospect
+    from utils.generator import generate_email, generate_outreach_sequence, optimize_profile
+    from utils.web_research import perform_web_research
+    from database.database import init_db, save_email, get_all_records
+except ImportError:
+    st.error("⚠️ Error importing modules. Please check 'utils' folder.")
+    st.stop()
 
-# 2. Initialize DB
+# Initialize
 init_db()
+st.set_page_config(page_title="AI Career OS v4", layout="wide", page_icon="⚡")
 
-# --- HELPER: RESULT DISPLAY COMPONENT ---
-def display_intelligence_report(data, notes, current_goal):
-    """
-    Reusable component to render the analysis results and generation button.
-    Used by both Auto-Pilot and Manual tabs.
-    """
-    # --- 1. TARGET IDENTITY (FAIL-SAFE DISPLAY) ---
-    identity = data.get("identity", {})
+# Custom CSS for "Organized & Visible" Look
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #262730;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #4e4e4e;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 5px;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("⚡ AI Career OS")
+    st.caption("Offline LLaMA3 Engine")
     
-    # Extract fields with safe defaults
-    full_name = (identity.get('full_name') or "").strip() or "Unknown Target"
-    role = (identity.get('likely_current_role') or "").strip()
-    company = (identity.get('company') or "").strip()
-    location = (identity.get('location_if_known') or "").strip() or "Location Unknown"
-
-    # Construct the headline carefully to avoid "**** @ ****"
-    if role and company:
-        headline_md = f"**{role}** @ **{company}**"
-    elif role:
-        headline_md = f"**{role}**"
-    elif company:
-        headline_md = f"**{company}**"
-    else:
-        headline_md = "Role & Company Unknown"
-
-    with st.container(border=True):
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.markdown(f"### 🎯 {full_name}")
-            st.markdown(headline_md)
-            st.caption(f"📍 {location}")
-        with c2:
-            score = data.get("professional_profile", {}).get("decision_maker_score_0_to_100", 0)
-            st.metric("Fit Score", f"{score}/100")
-
-    # --- 2. PROFESSIONAL PROFILE & INTERESTS ---
-    t1, t2, t3 = st.tabs(["💼 Professional Profile", "🗣️ Interests & Activity", "🚀 Strategy"])
+    st.markdown("### 👤 User Profile")
+    user_resume = st.text_area("📄 Paste Resume / Skills", height=150, placeholder="E.g., Senior Python Dev...")
     
-    with t1:
-        prof = data.get("professional_profile", {})
-        st.markdown("#### Expertise & Focus")
-        # Safely handle list or missing data
-        skills = prof.get("key_skills_and_expertise", [])
-        if isinstance(skills, list) and skills:
-            st.info(f"**Core Skills:** {', '.join(skills)}")
-        
-        st.write(f"**Company Stage:** {prof.get('estimated_company_stage', 'Unknown')}")
-        st.success(f"**Why them:** {prof.get('relevance_reasoning', 'Analysis incomplete.')}")
+    st.markdown("### 🎯 Campaign Goal")
+    campaign_goal = st.selectbox("Current Objective", [
+        "Getting a Job (Active)", 
+        "Freelance Clients (B2B)", 
+        "Networking & Mentorship", 
+        "Fundraising / Investors"
+    ])
+    st.markdown("---")
+    st.info("v4.0 | Dashboard Optimized")
 
-    with t2:
-        interests = data.get("personal_interests", {})
-        st.markdown("#### What they are talking about")
-        
-        if interests.get("recent_activity_summary"):
-            st.markdown(f"Found on Web: *\"{interests.get('recent_activity_summary')}\"*")
-        
-        topics = interests.get("topics_discussed_recently", [])
-        if isinstance(topics, list) and topics:
-            st.write(f"**Topics:** {', '.join(topics)}")
-        else:
-            st.caption("No specific recent topics found in snippets.")
-            
-        comm = data.get("communication_analysis", {})
-        st.markdown("---")
-        st.caption(f"**Comm Style:** {comm.get('tone_style', 'Neutral')} | **Formality:** {comm.get('formality_score_0_to_100', 50)}%")
+# --- MAIN LAYOUT ---
+tab_auto, tab_brand, tab_dash = st.tabs(["🕵️ Intelligence Engine", "🎨 Profile Optimizer", "📊 History Dashboard"])
 
-    with t3:
-        strat = data.get("outreach_strategy", {})
-        buying = data.get("buying_intent_signals", {})
-        
-        st.markdown(f"**Hook:** `{strat.get('opening_hook_type', 'Direct Value')}`")
-        st.markdown(f"**CTA:** `{strat.get('cta_style', 'Direct Ask')}`")
-        
-        signals = buying.get('signals_detected', [])
-        if signals:
-            st.warning(f"🔥 **Signals:** {', '.join(signals)}")
-        else:
-            st.info("No strong buying signals detected yet.")
-
-    # --- 3. GENERATION ---
-    if st.button(f"📧 Generate '{current_goal}' Email", type="primary", use_container_width=True, key=f"gen_{current_goal}"):
-        with st.spinner("Drafting..."):
-            # Adapt data for generator
-            adapted_data = {
-                "basic_info": identity,
-                "communication_dna": data.get("communication_analysis"),
-                "outreach_strategy": data.get("outreach_strategy"),
-                "behavioral_traits": data.get("behavioral_intelligence"),
-                "buying_signals": {"signals_found": data.get("buying_intent_signals", {}).get("signals_detected", [])},
-                "company_insights": {"likely_tech_stack": []}
-            }
-            
-            email = generate_email(adapted_data, notes, current_goal)
-            
-            save_email(
-                full_name,
-                role or "Unknown Role",
-                company or "Unknown Company",
-                identity.get('industry', 'Unknown'),
-                data['outreach_strategy']['recommended_tone'],
-                email,
-                f"{current_goal} | {data['behavioral_intelligence']['archetype']}"
-            )
-            st.text_area("Final Draft", email, height=400)
-
-
-# --- MAIN APP LOGIC ---
-
-st.title("🚀 LLaMA3 Multi-Purpose Outreach Engine")
-
-# --- GLOBAL CAMPAIGN SETTINGS ---
-with st.container(border=True):
-    col_goal, col_temp = st.columns([2, 1])
-    with col_goal:
-        campaign_goal = st.selectbox(
-            "🎯 What is your current goal?",
-            [
-                "Getting a Job / Internship",
-                "Getting Clients / Freelance Projects",
-                "Getting Investors / Fundraising",
-                "Getting Job Referrals / Networking",
-                "Getting Recruiters (Headhunters)",
-                "Getting Partnerships (B2B)"
-            ],
-            index=0
-        )
-
-st.markdown("---")
-
-tab_manual, tab_auto = st.tabs(["📝 Manual Input" , "🌐 Auto-Pilot (Web Research)"])
-
-# ================= AUTO-PILOT TAB =================
+# === TAB 1: INTELLIGENCE ENGINE ===
 with tab_auto:
-    col_search, col_results = st.columns([1, 1])
-    
-    with col_search:
-        st.subheader("Target Parameters")
-        linkedin_url = st.text_input("Enter LinkedIn URL", placeholder="https://www.linkedin.com/in/satya-nadella")
+    # 1. Input Section (Compact)
+    with st.container(border=True):
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.markdown("### 🎯 Target")
+        with c2:
+            linkedin_url = st.text_input("LinkedIn URL", placeholder="https://linkedin.com/in/...", label_visibility="collapsed")
         
-        note_placeholder = "e.g., I'm a React Dev looking for a senior role..."
-        if "Clients" in campaign_goal: note_placeholder = "e.g., We help SaaS companies scale SEO..."
-        if "Investors" in campaign_goal: note_placeholder = "e.g., Pre-seed AI startup raising $500k..."
-        
-        user_notes_auto = st.text_area("Your Pitch / Context", height=100, placeholder=note_placeholder, key="auto_notes_input")
-        
-        search_btn = st.button("🔍 Start Research & Analysis", type="primary", use_container_width=True)
-        
-    with col_results:
-        st.subheader("Intelligence Report")
-        if search_btn:
+        user_notes = st.text_input("💡 Context / Pitch (Optional)", placeholder="E.g., I saw their post about AI scaling...")
+
+        if st.button("🚀 Run Intelligence Agents", type="primary"):
             if not linkedin_url:
-                st.error("Please enter a LinkedIn URL")
+                st.warning("Please paste a LinkedIn URL first.")
             else:
-                with st.status(f"🕵️ Running '{campaign_goal}' Agents...", expanded=True) as status:
-                    st.write("Extracting Identity...")
-                    research_data = perform_web_research(linkedin_url)
+                with st.status("🕵️ orchestrating AI Agents...", expanded=True) as status:
+                    st.write("🕷️ Agent 1: Scraping Public Data (Profile, Posts, Company)...")
+                    raw_data = perform_web_research(linkedin_url)
                     
-                    if "error" in research_data:
-                        status.update(label="❌ Research Failed", state="error")
-                        st.error(research_data["error"])
+                    if "error" in raw_data:
+                        status.update(label="❌ Scraping Failed", state="error")
+                        st.error(raw_data["error"])
                     else:
-                        st.write("✅ Web Snippets Collected")
-                        st.write(f"🧠 Profiling Target for: {campaign_goal}...")
-                        
-                        analysis_result = analyze_web_data(research_data, campaign_goal)
-                        
-                        if "error" in analysis_result:
-                            status.update(label="❌ Analysis Failed", state="error")
-                            st.error(analysis_result["error"])
-                        else:
-                            status.update(label="✅ Mission Complete", state="complete")
-                            st.session_state["auto_analysis"] = analysis_result
-                            st.session_state["auto_notes"] = user_notes_auto
-                            st.session_state["current_goal"] = campaign_goal
+                        st.write("🧠 Agent 2: LLaMA3 Analyzing Psychology & Strategy...")
+                        analysis = analyze_web_data(raw_data, campaign_goal, user_resume)
+                        st.session_state["analysis"] = analysis
+                        st.session_state["notes"] = user_notes
+                        status.update(label="✅ Intelligence Report Ready", state="complete")
 
-        # Display Results
-        if "auto_analysis" in st.session_state:
-            display_intelligence_report(
-                st.session_state["auto_analysis"], 
-                st.session_state["auto_notes"], 
-                st.session_state["current_goal"]
-            )
+    # 2. Dashboard Output Section
+    if "analysis" in st.session_state:
+        data = st.session_state["analysis"]
+        ident = data.get("identity", {})
+        intel = data.get("recruiter_intelligence", {})
+        psy = data.get("psychological_profile", {})
+        
+        # --- HEADER CARD ---
+        st.markdown("---")
+        with st.container(border=True):
+            col_profile, col_metrics = st.columns([2, 2])
+            
+            with col_profile:
+                st.markdown(f"## {ident.get('full_name', 'Target Name')}")
+                st.caption(f"**{ident.get('likely_current_role')}** @ {ident.get('company')}")
+                st.caption(f"📍 {ident.get('location')}")
+            
+            with col_metrics:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Engagement", f"{intel.get('activity_score', 0)}/100")
+                m2.metric("Hiring Status", intel.get("hiring_status", "Unknown"))
+                # Status Color Badge
+                status_color = "🟢" if "Active" in intel.get("hiring_status", "") else "🟡"
+                m3.write(f"**Signal:** {status_color}")
 
-# ================= MANUAL TAB =================
-with tab_manual:
-    col_man_input, col_man_results = st.columns([1, 1])
-    
-    with col_man_input:
-        st.subheader("Manual Data Entry")
-        man_name = st.text_input("Prospect Name")
-        man_role = st.text_input("Role")
-        man_company = st.text_input("Company")
+        # --- DETAILED PANELS ---
+        c_left, c_right = st.columns([1, 1])
         
-        st.caption("Context Data")
-        man_linkedin = st.text_area("Paste 'About' or 'Experience' Text", height=150)
-        man_posts = st.text_area("Paste Recent Posts / Content", height=100)
-        man_company_text = st.text_area("Paste Company Website Text", height=100)
-        
-        man_notes = st.text_area("Your Pitch / Context", height=100, key="man_notes_input")
-        
-        man_analyze_btn = st.button("🧠 Analyze Manual Data", type="primary", use_container_width=True)
+        with c_left:
+            st.markdown("### 🧠 Psychological Profile")
+            with st.container(border=True):
+                st.write(f"**Style:** {psy.get('communication_style')}")
+                st.write(f"**Motivations:** {psy.get('motivations', 'Unknown')}")
+                st.info(f"💡 **Tone Tip:** {psy.get('tone_preference')}")
 
-    with col_man_results:
-        st.subheader("Intelligence Report")
+        with c_right:
+            st.markdown("### ⚖️ Resume Alignment")
+            align = data.get("resume_alignment", {})
+            with st.container(border=True):
+                score = align.get("match_score", 0)
+                st.progress(score / 100, text=f"Match Score: {score}%")
+                st.write(f"**Strategy:** {align.get('alignment_strategy')}")
+
+        # --- GENERATION SECTION ---
+        st.markdown("### 📧 Outreach Sequence")
         
-        if man_analyze_btn:
-            if not man_name or not man_linkedin:
-                st.warning("⚠️ Please provide at least a Name and Profile Text.")
+        # Generation Button Centered
+        if st.button("⚡ Generate Personalized Sequence (F4)", use_container_width=True):
+            with st.spinner("✍️ Drafting high-conversion copy..."):
+                seq = generate_outreach_sequence(data, st.session_state["notes"], campaign_goal, user_resume)
+                st.session_state["sequence"] = seq
+                
+                # Save to DB
+                save_email(
+                    ident.get("full_name"), ident.get("likely_current_role"), 
+                    ident.get("company"), "N/A", psy.get("tone_preference"),
+                    json.dumps(seq), "Sequence"
+                )
+
+        # Sequence Output (Visible & Organized)
+        if "sequence" in st.session_state:
+            s = st.session_state["sequence"]
+            
+            # Use Expanders for cleaner look, default open
+            with st.expander("Step 1: Connection Request (LinkedIn)", expanded=True):
+                st.text_area("Copy this:", s.get("step1_connection_request", ""), height=100, label_visibility="collapsed")
+            
+            with st.expander("Step 2: Primary Email", expanded=True):
+                st.text_input("Subject:", s.get("step2_email_subject", ""))
+                st.text_area("Body:", s.get("step2_email_body", ""), height=300)
+            
+            with st.expander("Step 3: Follow-Up (3 Days later)", expanded=False):
+                st.text_area("Body:", s.get("step3_followup_body", ""), height=150)
+
+# === TAB 2: BRANDING ===
+with tab_brand:
+    with st.container(border=True):
+        st.header("✨ AI Profile Optimizer")
+        st.caption("Past a job description to re-write your profile for it.")
+        target_job = st.text_area("Target Job Description", height=200)
+        
+        if st.button("Optimize My Profile"):
+            if not user_resume:
+                st.error("Please add your Resume in the Sidebar first!")
             else:
-                with st.spinner(f"🧠 Profiling Target for: {campaign_goal}..."):
-                    # Construct a research object manually to reuse the powerful engine
-                    manual_data = {
-                        "name_from_url": man_name,
-                        "linkedin_url": "Manual Entry",
-                        "google_snippets": [f"Role: {man_role}\nCompany: {man_company}\nProfile: {man_linkedin}"],
-                        "company_website_text": [man_company_text],
-                        "additional_public_text": [man_posts]
-                    }
+                with st.spinner("Optimizing..."):
+                    opt = optimize_profile(user_resume, target_job)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.subheader("New Headline")
+                        st.info(opt.get("optimized_headline"))
+                    with c2:
+                        st.subheader("Skills to Add")
+                        st.write(opt.get("skills_to_add"))
                     
-                    analysis_result = analyze_web_data(manual_data, campaign_goal)
-                    
-                    if "error" in analysis_result:
-                        st.error(analysis_result["error"])
-                    else:
-                        st.session_state["manual_analysis"] = analysis_result
-                        st.session_state["manual_notes"] = man_notes
-                        st.session_state["current_goal"] = campaign_goal
-        
-        # Display Manual Results
-        if "manual_analysis" in st.session_state:
-            display_intelligence_report(
-                st.session_state["manual_analysis"], 
-                st.session_state["manual_notes"], 
-                st.session_state["current_goal"]
-            )
+                    st.subheader("About Section Rewrite")
+                    st.text_area("Copy this:", opt.get("about_section_rewrite"), height=300)
+
+# === TAB 3: DASHBOARD ===
+with tab_dash:
+    st.header("📊 Outreach History")
+    records = get_all_records()
+    if not records:
+        st.info("No outreach generated yet.")
+    else:
+        st.dataframe(records, use_container_width=True)

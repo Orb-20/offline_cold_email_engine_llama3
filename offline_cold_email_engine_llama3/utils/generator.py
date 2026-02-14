@@ -1,79 +1,106 @@
 import requests
+import json
+import re
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
-def generate_email(analysis_json, user_notes, objective="General Outreach"):
+def call_ollama(prompt, temperature=0.4):
     """
-    Generates an email tailored to the specific User Objective.
-    CRITICAL: Accepts 'objective' to switch personas (Candidate vs Sales vs Founder).
+    Sends request to Ollama with error printing.
     """
-    
-    basics = analysis_json.get("basic_info", {})
-    dna = analysis_json.get("communication_dna", {})
-    strategy = analysis_json.get("outreach_strategy", {})
-    traits = analysis_json.get("behavioral_traits", {})
-    
-    # DYNAMIC PERSONA SWITCHING
-    sender_persona = "Professional"
-    context_instruction = "Write a standard business email."
-    
-    if "Job" in objective or "Internship" in objective:
-        sender_persona = "Ambitious, skilled candidate"
-        context_instruction = "Frame the email as a high-value job application or networking request. Focus on how I can solve their problems. NOT a desperate plea."
-    elif "Clients" in objective:
-        sender_persona = "Expert Consultant / Agency Owner"
-        context_instruction = "Frame the email as a B2B sales outreach. Focus on ROI, case studies, and solving pain points."
-    elif "Investors" in objective:
-        sender_persona = "Visionary Founder"
-        context_instruction = "Frame the email as a deal flow opportunity. Focus on traction, market size, and FOMO."
-    elif "Referrals" in objective:
-        sender_persona = "Industry Peer / Aspiring Professional"
-        context_instruction = "Frame the email as a request for advice or a virtual coffee. Be respectful of their time. Flattery works here."
-    elif "Recruiters" in objective:
-        sender_persona = "Top Talent Candidate"
-        context_instruction = "Frame the email as a brief introduction to a headhunter. Highlight specific skills and availability."
-
-    prompt = f"""
-You are an expert copywriter acting as: {sender_persona}.
-Goal: {objective}
-
-Write a cold email to {basics.get('full_name', 'the prospect')} based on this analysis.
-
-### STRATEGY BLUEPRINT
-- **Target Archetype:** {traits.get('archetype', 'Professional')}
-- **Tone:** {strategy.get('recommended_tone', 'Professional')}
-- **Hook:** {strategy.get('opening_hook_type', 'Direct Value')}
-- **CTA:** {strategy.get('cta_style', 'Direct Ask')}
-
-### COMMUNICATION DNA (Mimic their style)
-- **Formality:** {dna.get('formality_score_0_to_100', 50)}/100
-- **Style:** {dna.get('tone_style', 'Professional')}
-
-### CONTEXT
-- **My Context/Pitch:** {user_notes}
-- **Detected Signals:** {', '.join(analysis_json.get('buying_intent_signals', {}).get('signals_detected', []))}
-
-### INSTRUCTIONS
-1. {context_instruction}
-2. Keep it under 150 words.
-3. Use the specific CTA defined above.
-4. Do NOT use generic openings like "I hope this email finds you well."
-
-Output ONLY the email body and subject line.
-"""
-
     payload = {
         "model": "llama3",
         "prompt": prompt,
-        "stream": False
+        "stream": False,
+        "options": {"temperature": temperature, "num_ctx": 4096}
+    }
+    try:
+        print(f"⚡ Sending request to LLaMA3... (Temp: {temperature})")
+        response = requests.post(OLLAMA_URL, json=payload, timeout=90)
+        response.raise_for_status()
+        text = response.json().get("response", "")
+        print("✅ LLaMA3 Responded.")
+        return text
+    except Exception as e:
+        print(f"❌ Ollama Error: {e}")
+        return f"ERROR: {str(e)}"
+
+def clean_json(text):
+    """
+    Ultra-robust cleaner. Extracts JSON even if buried in text.
+    If parsing fails, returns raw text in a fallback dictionary.
+    """
+    if not text or "ERROR" in text:
+        return {}
+
+    # 1. Try finding JSON block between brackets
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        json_str = match.group(0)
+        try:
+            return json.loads(json_str)
+        except:
+            # Fix common LLaMA3 JSON errors (like trailing commas)
+            try:
+                json_str = re.sub(r',\s*}', '}', json_str) # Remove trailing comma
+                return json.loads(json_str)
+            except:
+                pass
+
+    # 2. Fallback: If not valid JSON, return raw text mapped to keys
+    # This ensures you NEVER get empty boxes.
+    print("⚠️ JSON Parsing failed, returning raw text fallback.")
+    return {
+        "step1_connection_request": "Could not parse specific section. See raw output below.",
+        "step2_email_subject": "Draft Subject",
+        "step2_email_body": text, # Dump everything here so user can see it
+        "step3_followup_body": "See email body above."
     }
 
-    try:
-        response = requests.post(OLLAMA_URL, json=payload, timeout=45)
-        response.raise_for_status()
-        return response.json().get("response", "Error: No response generated.")
+def generate_outreach_sequence(analysis_json, user_notes, objective, user_resume=None):
+    identity = analysis_json.get("identity", {})
+    psyche = analysis_json.get("psychological_profile", {})
+    align = analysis_json.get("resume_alignment", {})
     
-    except requests.exceptions.ConnectionError:
-        return "CONNECTION_ERROR"
-    except Exception as e:
-        return f"ERROR: {str(e)}"
+    prompt = f"""
+    Act as a Career Strategist.
+    Goal: {objective}
+    Target: {identity.get('full_name')} ({identity.get('likely_current_role')})
+    Psychology: {psyche.get('communication_style')}
+    Context: {user_notes}
+    Alignment: {align.get('alignment_strategy')}
+    
+    Create a 3-part outreach sequence.
+    
+    STRICT FORMAT REQUIREMENT:
+    Return raw JSON only. No markdown formatting. No intro text.
+    
+    {{
+      "step1_connection_request": "Connection note (max 300 chars)",
+      "step2_email_subject": "Email Subject",
+      "step2_email_body": "Main Email Body",
+      "step3_followup_body": "Short Follow-up (3 days later)"
+    }}
+    """
+    raw = call_ollama(prompt, temperature=0.5)
+    return clean_json(raw)
+
+def optimize_profile(user_resume, target_role_analysis):
+    prompt = f"""
+    Act as a LinkedIn Expert.
+    Resume: {user_resume}
+    Target Role: {target_role_analysis}
+    
+    Optimize my profile. Return raw JSON only.
+    {{
+      "optimized_headline": "New Headline",
+      "about_section_rewrite": "New About Section",
+      "skills_to_add": ["Skill 1", "Skill 2"]
+    }}
+    """
+    raw = call_ollama(prompt, temperature=0.3)
+    return clean_json(raw)
+
+# Keep legacy for compatibility
+def generate_email(analysis_json, user_notes, objective="General Outreach"):
+    return call_ollama(f"Write a cold email for {objective}. Context: {user_notes}")
